@@ -5,6 +5,9 @@ import os
 from ytj_scraper import YTJCompanyScraper
 from openai import OpenAI
 from threading import Thread
+import requests
+from bs4 import BeautifulSoup
+import time
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -26,12 +29,175 @@ scraping_status = {
     'results': []
 }
 
+validation_status = {
+    'is_running': False,
+    'progress': 0,
+    'total': 0,
+    'current_company': '',
+    'validated_count': 0,
+    'removed_count': 0
+}
+
 agent_status = {
     'is_running': False,
     'progress': 0,
     'total': 0,
     'current_company': ''
 }
+
+def validate_company_on_finder(company):
+    """Check if company exists on finder.fi and extract additional details"""
+    try:
+        # Search finder.fi for the company by name
+        company_name = company.get('name', '')
+        search_url = f"https://www.finder.fi/search?what={requests.utils.quote(company_name)}&sort=RELEVANCE_desc&page=1"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        print(f"  Searching: {search_url}")
+        response = requests.get(search_url, headers=headers, timeout=10)
+        
+        if response.status_code != 200:
+            return None
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Look for search results
+        results = soup.find_all('a', href=lambda x: x and '/yritys/' in x if x else False)
+        
+        if not results:
+            print(f"  ✗ Not found on finder.fi")
+            return None
+        
+        # Try to find exact match by comparing company names
+        company_link = None
+        business_id = company.get('business_id', '')
+        
+        for result in results:
+            result_text = result.get_text().lower()
+            company_name_lower = company_name.lower()
+            
+            # Check if this result matches our company (by name or business ID)
+            if (company_name_lower in result_text or 
+                business_id in result_text or
+                any(word in result_text for word in company_name_lower.split()[:2])):  # Match first 2 words
+                company_link = result
+                break
+        
+        if not company_link:
+            print(f"  ✗ No matching company found in search results")
+            return None
+        
+        # Get company page
+        company_url = 'https://www.finder.fi' + company_link['href']
+        print(f"  Found match: {company_url}")
+        
+        company_response = requests.get(company_url, headers=headers, timeout=10)
+        company_soup = BeautifulSoup(company_response.text, 'html.parser')
+        
+        # Extract additional business details
+        finder_data = {
+            'finder_url': company_url,
+            'verified_on_finder': True
+        }
+        
+        # Try to extract revenue/turnover
+        revenue_element = company_soup.find(text=lambda t: 'Liikevaihto' in t if t else False)
+        if revenue_element:
+            revenue_parent = revenue_element.find_parent()
+            if revenue_parent:
+                revenue_text = revenue_parent.get_text(strip=True)
+                finder_data['revenue'] = revenue_text
+        
+        # Try to extract employee count
+        employee_element = company_soup.find(text=lambda t: 'Henkilöstö' in t if t else False)
+        if employee_element:
+            employee_parent = employee_element.find_parent()
+            if employee_parent:
+                employee_text = employee_parent.get_text(strip=True)
+                finder_data['employees'] = employee_text
+        
+        # Try to extract founding year
+        founded_element = company_soup.find(text=lambda t: 'Perustettu' in t if t else False)
+        if founded_element:
+            founded_parent = founded_element.find_parent()
+            if founded_parent:
+                founded_text = founded_parent.get_text(strip=True)
+                finder_data['founded'] = founded_text
+        
+        print(f"  ✓ Found on finder.fi with additional data")
+        return finder_data
+        
+    except Exception as e:
+        print(f"  Error validating on finder.fi: {e}")
+        return None
+
+def run_finder_validation(leads):
+    """Background task to validate leads on finder.fi"""
+    global validation_status, scraping_status
+    
+    try:
+        validation_status['is_running'] = True
+        validation_status['progress'] = 0
+        validation_status['total'] = len(leads)
+        validation_status['validated_count'] = 0
+        validation_status['removed_count'] = 0
+        
+        validated_leads = []
+        
+        for idx, lead in enumerate(leads):
+            validation_status['current_company'] = lead['name']
+            validation_status['progress'] = idx + 1
+            
+            print(f"\n[{idx + 1}/{len(leads)}] Validating: {lead['name']}")
+            
+            # Check if lead has email already
+            has_email = (lead.get('contact_info', {}).get('emails') or 
+                        any(c.get('email') for c in lead.get('contact_info', {}).get('contacts', [])))
+            
+            # Check on finder.fi
+            finder_data = validate_company_on_finder(lead)
+            
+            # Keep lead if: has email OR found on finder (or both)
+            if has_email or finder_data:
+                if finder_data:
+                    lead['finder_data'] = finder_data
+                validated_leads.append(lead)
+                validation_status['validated_count'] += 1
+                
+                if has_email and finder_data:
+                    print(f"  ✓ Kept (has email + found on finder)")
+                elif has_email:
+                    print(f"  ✓ Kept (has email)")
+                else:
+                    print(f"  ✓ Kept (found on finder)")
+            else:
+                # Remove only if NO email AND NOT found on finder
+                validation_status['removed_count'] += 1
+                print(f"  ✗ Removed (no email + not found on finder)")
+            
+            time.sleep(2)  # Rate limiting - increased for search
+        
+        # Save validated results
+        print(f"\n{'='*60}")
+        print(f"Validation complete!")
+        print(f"  Total leads: {len(leads)}")
+        print(f"  Validated (kept): {validation_status['validated_count']}")
+        print(f"  Removed: {validation_status['removed_count']}")
+        print(f"{'='*60}\n")
+        
+        with open('companies_leads_validated.json', 'w', encoding='utf-8') as f:
+            json.dump(validated_leads, f, ensure_ascii=False, indent=2)
+        
+        scraping_status['results'] = validated_leads
+        validation_status['is_running'] = False
+        
+    except Exception as e:
+        print(f"Error in validation: {e}")
+        validation_status['is_running'] = False
+        validation_status['error'] = str(e)
 
 def run_scraper(params):
     """Background task to run the scraper"""
@@ -49,7 +215,7 @@ def run_scraper(params):
         page = 1
         companies_processed = 0
         max_companies = params['max_companies']
-        main_business_line = params.get('main_business_line')
+        main_business_line_filter = params.get('main_business_line')  # ADD THIS LINE
         
         scraping_status['total'] = max_companies
         
@@ -73,11 +239,11 @@ def run_scraper(params):
                 result = scraper.process_company(company)
                 
                 # Filter by business line code if specified
-                if main_business_line:
+                if main_business_line_filter:  # CHANGE THIS
                     company_bl_code = result.get('main_business_line_code', '')
                     # Check if it matches exactly or starts with the code (for subcategories)
-                    if not (company_bl_code == main_business_line or company_bl_code.startswith(main_business_line)):
-                        print(f"  Skipping {result['name']} - business line {company_bl_code} doesn't match filter {main_business_line}")
+                    if not (company_bl_code == main_business_line_filter or company_bl_code.startswith(main_business_line_filter)):  # CHANGE THIS
+                        print(f"  Skipping {result['name']} - business line {company_bl_code} doesn't match filter {main_business_line_filter}")  # CHANGE THIS
                         continue
                 
                 scraping_status['current_company'] = result['name']
@@ -260,13 +426,33 @@ def start_scrape():
     
     return jsonify({'message': 'Scraping started', 'status': 'running'})
 
+@app.route('/api/validate', methods=['POST'])
+def validate_with_finder():
+    """Validate leads with finder.fi"""
+    if validation_status['is_running']:
+        return jsonify({'error': 'Validation already running'}), 400
+    
+    data = request.json
+    leads = data.get('leads', [])
+    
+    if not leads:
+        return jsonify({'error': 'No leads provided'}), 400
+    
+    # Start validation in background thread
+    thread = Thread(target=run_finder_validation, args=(leads,))
+    thread.daemon = True
+    thread.start()
+    
+    return jsonify({'message': 'Validation started', 'status': 'running'})
+
 @app.route('/api/status', methods=['GET'])
 def get_status():
     """Get current scraping status"""
     print("Status endpoint called")  # Debug logging
     return jsonify({
         'scraping': scraping_status,
-        'agent': agent_status
+        'agent': agent_status,
+        'validation': validation_status
     })
 
 @app.route('/api/results', methods=['GET'])

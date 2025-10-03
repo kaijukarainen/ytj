@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Download, Search, Sparkles, Play, CheckCircle, Loader2, Clock, TrendingUp } from 'lucide-react';
+import { Download, Search, Sparkles, Play, CheckCircle, Loader2, Clock, TrendingUp, ShieldCheck } from 'lucide-react';
 
 export default function App() {
   const [params, setParams] = useState({
@@ -75,16 +75,32 @@ export default function App() {
     }
   };
 
+  const validateWithFinder = async () => {
+    try {
+      const response = await fetch('http://localhost:5001/api/validate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ leads: results })
+      });
+      const data = await response.json();
+    } catch (err) {
+      alert('Error starting validation: ' + err.message);
+    }
+  };
+
   const downloadResults = () => {
     window.location.href = `http://localhost:5001/api/download?filename=${params.output_file}`;
   };
 
   const isScraping = status?.scraping?.is_running;
   const isEnriching = status?.agent?.is_running;
+  const isValidating = status?.validation?.is_running;
   const scrapingProgress = status?.scraping?.progress || 0;
   const scrapingTotal = status?.scraping?.total || 0;
   const agentProgress = status?.agent?.progress || 0;
   const agentTotal = status?.agent?.total || 0;
+  const validationProgress = status?.validation?.progress || 0;
+  const validationTotal = status?.validation?.total || 0;
 
   const getEstimatedTime = (progress, total, startTime) => {
     if (!startTime || progress === 0) return null;
@@ -104,7 +120,7 @@ export default function App() {
       <div className="container mx-auto px-4 py-8 max-w-6xl">
         <header className="mb-8">
           <h1 className="text-4xl font-bold text-gray-900 mb-2">
-            COPA Lead Scraper
+            Finnish Company Lead Scraper
           </h1>
           <p className="text-gray-600">Scrape Finnish company data with AI-powered contact enrichment</p>
         </header>
@@ -307,24 +323,79 @@ export default function App() {
               <h2 className="text-2xl font-bold text-gray-900">
                 Results ({results.length})
               </h2>
-              <button
-                onClick={downloadResults}
-                className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-4 py-2 rounded-lg font-semibold hover:from-blue-700 hover:to-indigo-700 flex items-center gap-2 shadow-md"
-              >
-                <Download size={18} />
-                Download JSON
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={validateWithFinder}
+                  disabled={isValidating}
+                  className="bg-gradient-to-r from-violet-600 to-purple-600 text-white px-4 py-2 rounded-lg font-semibold hover:from-violet-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-md"
+                >
+                  {isValidating ? (
+                    <>
+                      <Loader2 size={18} className="animate-spin" />
+                      Validating...
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck size={18} />
+                      Validate on Finder.fi
+                    </>
+                  )}
+                </button>
+                <button
+                  onClick={downloadResults}
+                  className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-4 py-2 rounded-lg font-semibold hover:from-blue-700 hover:to-indigo-700 flex items-center gap-2 shadow-md"
+                >
+                  <Download size={18} />
+                  Download JSON
+                </button>
+              </div>
             </div>
+
+            {isValidating && (
+              <div className="mb-4 bg-violet-50 rounded-lg p-4 border-2 border-violet-200">
+                <div className="flex justify-between items-center text-sm text-gray-700 mb-2">
+                  <span className="font-semibold">Validating on Finder.fi</span>
+                  <span className="font-mono">{validationProgress} / {validationTotal}</span>
+                </div>
+                <div className="w-full bg-gray-200 rounded-full h-3 mb-2">
+                  <div 
+                    className="bg-gradient-to-r from-violet-500 to-purple-600 h-3 rounded-full transition-all duration-300 flex items-center justify-end pr-2"
+                    style={{width: `${(validationProgress / validationTotal) * 100}%`}}
+                  >
+                    <span className="text-xs font-bold text-white">{Math.round((validationProgress / validationTotal) * 100)}%</span>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <div className="flex items-center gap-2 text-gray-700">
+                    <ShieldCheck size={16} className="text-violet-600" />
+                    <span className="truncate">{status?.validation?.current_company}</span>
+                  </div>
+                  <div className="flex gap-4 text-xs">
+                    <span className="text-green-600">✓ {status?.validation?.validated_count || 0} kept</span>
+                    <span className="text-red-600">✗ {status?.validation?.removed_count || 0} removed</span>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div className="space-y-4 max-h-96 overflow-y-auto">
               {results.map((company, idx) => {
                 const hasEnrichedData = company.contact_info?.emails?.length > 0 || company.contact_info?.contacts?.length > 0;
+                const isVerifiedOnFinder = company.finder_data?.verified_on_finder;
                 
                 return (
                   <div key={idx} className="bg-gradient-to-r from-gray-50 to-blue-50 rounded-lg p-4 border border-gray-200 hover:shadow-md transition-shadow">
                     <div className="flex justify-between items-start mb-2">
                       <div className="flex-1">
-                        <h3 className="text-lg font-bold text-gray-900">{company.name}</h3>
+                        <div className="flex items-center gap-2">
+                          <h3 className="text-lg font-bold text-gray-900">{company.name}</h3>
+                          {isVerifiedOnFinder && (
+                            <span className="text-xs bg-violet-100 text-violet-700 px-2 py-1 rounded font-medium flex items-center gap-1">
+                              <ShieldCheck size={12} />
+                              Verified
+                            </span>
+                          )}
+                        </div>
                         <p className="text-sm text-gray-600">{company.business_id}</p>
                       </div>
                       {hasEnrichedData && (
@@ -342,6 +413,20 @@ export default function App() {
                     <p className="text-sm text-gray-700 mb-2">
                       {company.main_business_line}
                     </p>
+
+                    {company.finder_data && (
+                      <div className="mb-2 bg-violet-50 rounded p-2 border border-violet-200">
+                        <p className="text-xs font-semibold text-violet-700 mb-1">Finder.fi Data:</p>
+                        <div className="text-xs text-gray-700 space-y-1">
+                          {company.finder_data.revenue && <div>💰 Revenue: {company.finder_data.revenue}</div>}
+                          {company.finder_data.employees && <div>👥 Employees: {company.finder_data.employees}</div>}
+                          {company.finder_data.founded && <div>📅 Founded: {company.finder_data.founded}</div>}
+                          <a href={company.finder_data.finder_url} target="_blank" rel="noopener noreferrer" className="text-violet-600 hover:underline block">
+                            View on Finder.fi →
+                          </a>
+                        </div>
+                      </div>
+                    )}
 
                     {company.website && (
                       <a 
