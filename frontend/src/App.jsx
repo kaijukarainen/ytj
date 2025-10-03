@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Download, Search, Sparkles, Play, CheckCircle, Loader2, Clock, TrendingUp, ShieldCheck } from 'lucide-react';
+import { Download, Search, Sparkles, Play, CheckCircle, Loader2, Clock, TrendingUp, ShieldCheck, FileSpreadsheet, Trash2, Database } from 'lucide-react';
 
 export default function App() {
   const [params, setParams] = useState({
@@ -15,6 +15,7 @@ export default function App() {
   const [results, setResults] = useState([]);
   const [businessLines, setBusinessLines] = useState([]);
   const [startTime, setStartTime] = useState(null);
+  const [cacheStats, setCacheStats] = useState({ entries: 0, size_kb: 0 });
 
   useEffect(() => {
     fetch('http://localhost:5001/api/business-lines')
@@ -38,6 +39,12 @@ export default function App() {
           }
         })
         .catch(err => console.error('Error fetching status:', err));
+      
+      // Fetch cache stats
+      fetch('http://localhost:5001/api/cache/stats')
+        .then(res => res.json())
+        .then(data => setCacheStats(data))
+        .catch(err => console.error('Error fetching cache stats:', err));
     }, 1000);
 
     return () => clearInterval(interval);
@@ -90,6 +97,36 @@ export default function App() {
 
   const downloadResults = () => {
     window.location.href = `http://localhost:5001/api/download?filename=${params.output_file}`;
+  };
+
+  const downloadCSV = () => {
+    const csvFilename = params.output_file.replace('.json', '.csv');
+    window.location.href = `http://localhost:5001/api/download-csv?filename=${csvFilename}`;
+  };
+
+  const downloadValidatedCSV = () => {
+    window.location.href = 'http://localhost:5001/api/download-csv?filename=companies_leads_validated.csv';
+  };
+
+  const clearCache = async () => {
+    if (!confirm('Are you sure you want to clear the Finder.fi cache? This will remove all cached company data.')) {
+      return;
+    }
+    
+    try {
+      const response = await fetch('http://localhost:5001/api/cache/clear', {
+        method: 'POST'
+      });
+      const data = await response.json();
+      alert(data.message || 'Cache cleared successfully');
+      
+      // Refresh cache stats
+      const statsResponse = await fetch('http://localhost:5001/api/cache/stats');
+      const statsData = await statsResponse.json();
+      setCacheStats(statsData);
+    } catch (err) {
+      alert('Error clearing cache: ' + err.message);
+    }
   };
 
   const isScraping = status?.scraping?.is_running;
@@ -319,35 +356,128 @@ export default function App() {
 
         {results.length > 0 && (
           <div className="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-2xl font-bold text-gray-900">
-                Results ({results.length})
-              </h2>
-              <div className="flex gap-2">
-                <button
-                  onClick={validateWithFinder}
-                  disabled={isValidating}
-                  className="bg-gradient-to-r from-violet-600 to-purple-600 text-white px-4 py-2 rounded-lg font-semibold hover:from-violet-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-md"
-                >
-                  {isValidating ? (
-                    <>
-                      <Loader2 size={18} className="animate-spin" />
-                      Validating...
-                    </>
-                  ) : (
-                    <>
-                      <ShieldCheck size={18} />
-                      Validate on Finder.fi
-                    </>
+            <div className="flex flex-col gap-4 mb-6">
+              {/* Header Row */}
+              <div className="flex justify-between items-center">
+                <div>
+                  <h2 className="text-2xl font-bold text-gray-900">
+                    Results ({results.length})
+                  </h2>
+                  {cacheStats.entries > 0 && (
+                    <p className="text-sm text-gray-600 mt-1 flex items-center gap-2">
+                      <Database size={14} />
+                      Cache: {cacheStats.entries} entries ({cacheStats.size_kb.toFixed(1)} KB)
+                    </p>
                   )}
-                </button>
-                <button
-                  onClick={downloadResults}
-                  className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-4 py-2 rounded-lg font-semibold hover:from-blue-700 hover:to-indigo-700 flex items-center gap-2 shadow-md"
-                >
-                  <Download size={18} />
-                  Download JSON
-                </button>
+                </div>
+                
+                <div className="flex gap-2">
+                  {/* Validate Button */}
+                  <button
+                    onClick={validateWithFinder}
+                    disabled={isValidating}
+                    className="bg-gradient-to-r from-violet-600 to-purple-600 text-white px-4 py-2 rounded-lg font-semibold hover:from-violet-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-md"
+                  >
+                    {isValidating ? (
+                      <>
+                        <Loader2 size={18} className="animate-spin" />
+                        Validating...
+                      </>
+                    ) : (
+                      <>
+                        <ShieldCheck size={18} />
+                        Validate on Finder.fi
+                      </>
+                    )}
+                  </button>
+
+                  {/* Download Dropdown */}
+                  <div className="relative group">
+                    <button
+                      className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-4 py-2 rounded-lg font-semibold hover:from-blue-700 hover:to-indigo-700 flex items-center gap-2 shadow-md"
+                    >
+                      <Download size={18} />
+                      Download
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </button>
+                    
+                    {/* Dropdown Menu */}
+                    <div className="absolute right-0 mt-2 w-56 bg-white rounded-lg shadow-xl border border-gray-200 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-10">
+                      <div className="py-2">
+                        <button
+                          onClick={downloadResults}
+                          className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 flex items-center gap-2"
+                        >
+                          <Download size={16} className="text-blue-600" />
+                          Download JSON
+                        </button>
+                        <button
+                          onClick={downloadCSV}
+                          className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-green-50 flex items-center gap-2"
+                        >
+                          <FileSpreadsheet size={16} className="text-green-600" />
+                          Download CSV
+                        </button>
+                        <div className="border-t border-gray-200 my-1"></div>
+                        <button
+                          onClick={downloadValidatedCSV}
+                          className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-violet-50 flex items-center gap-2"
+                        >
+                          <FileSpreadsheet size={16} className="text-violet-600" />
+                          Validated Results (CSV)
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Cache Management */}
+                  {cacheStats.entries > 0 && (
+                    <button
+                      onClick={clearCache}
+                      className="bg-gradient-to-r from-red-500 to-red-600 text-white px-4 py-2 rounded-lg font-semibold hover:from-red-600 hover:to-red-700 flex items-center gap-2 shadow-md"
+                      title="Clear Finder.fi cache"
+                    >
+                      <Trash2 size={18} />
+                      Clear Cache
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Info Cards Row */}
+              <div className="grid grid-cols-3 gap-3">
+                <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-3 border border-blue-200">
+                  <div className="flex items-center gap-2 text-blue-700 mb-1">
+                    <Database size={16} />
+                    <span className="text-xs font-semibold">Total Results</span>
+                  </div>
+                  <p className="text-2xl font-bold text-blue-900">{results.length}</p>
+                </div>
+
+                <div className="bg-gradient-to-br from-emerald-50 to-emerald-100 rounded-lg p-3 border border-emerald-200">
+                  <div className="flex items-center gap-2 text-emerald-700 mb-1">
+                    <CheckCircle size={16} />
+                    <span className="text-xs font-semibold">With Contacts</span>
+                  </div>
+                  <p className="text-2xl font-bold text-emerald-900">
+                    {results.filter(r => 
+                      r.contact_info?.emails?.length > 0 || 
+                      r.contact_info?.contacts?.length > 0
+                    ).length}
+                  </p>
+                </div>
+
+                <div className="bg-gradient-to-br from-violet-50 to-violet-100 rounded-lg p-3 border border-violet-200">
+                  <div className="flex items-center gap-2 text-violet-700 mb-1">
+                    <ShieldCheck size={16} />
+                    <span className="text-xs font-semibold">Verified on Finder</span>
+                  </div>
+                  <p className="text-2xl font-bold text-violet-900">
+                    {results.filter(r => r.finder_data?.verified_on_finder).length}
+                  </p>
+                </div>
               </div>
             </div>
 
@@ -410,24 +540,143 @@ export default function App() {
                       )}
                     </div>
                     
-                    <p className="text-sm text-gray-700 mb-2">
+                    <p className="text-sm text-gray-700 mb-3">
                       {company.main_business_line}
                     </p>
 
+                    {/* Enhanced Finder.fi Data Section */}
                     {company.finder_data && (
-                      <div className="mb-2 bg-violet-50 rounded p-2 border border-violet-200">
-                        <p className="text-xs font-semibold text-violet-700 mb-1">Finder.fi Data:</p>
-                        <div className="text-xs text-gray-700 space-y-1">
-                          {company.finder_data.revenue && <div>💰 Revenue: {company.finder_data.revenue}</div>}
-                          {company.finder_data.employees && <div>👥 Employees: {company.finder_data.employees}</div>}
-                          {company.finder_data.founded && <div>📅 Founded: {company.finder_data.founded}</div>}
-                          <a href={company.finder_data.finder_url} target="_blank" rel="noopener noreferrer" className="text-violet-600 hover:underline block">
-                            View on Finder.fi →
+                      <div className="mb-3 bg-gradient-to-br from-violet-50 to-purple-50 rounded-lg p-3 border border-violet-200 shadow-sm">
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="text-sm font-bold text-violet-700 flex items-center gap-1">
+                            <TrendingUp size={14} />
+                            Finder.fi Business Intelligence
+                          </p>
+                          <a 
+                            href={company.finder_data.finder_url} 
+                            target="_blank" 
+                            rel="noopener noreferrer" 
+                            className="text-xs text-violet-600 hover:text-violet-800 hover:underline font-medium"
+                          >
+                            View Full Profile →
                           </a>
                         </div>
+
+                        {/* Basic Info Grid */}
+                        {company.finder_data.basic_info && Object.keys(company.finder_data.basic_info).length > 0 && (
+                          <div className="grid grid-cols-2 gap-2 mb-2">
+                            {company.finder_data.basic_info.founded && (
+                              <div className="bg-white rounded p-2 border border-violet-100">
+                                <p className="text-xs text-gray-500 mb-0.5">Founded</p>
+                                <p className="text-sm font-semibold text-gray-900">
+                                  📅 {company.finder_data.basic_info.founded}
+                                </p>
+                              </div>
+                            )}
+                            {company.finder_data.basic_info.employees && (
+                              <div className="bg-white rounded p-2 border border-violet-100">
+                                <p className="text-xs text-gray-500 mb-0.5">Employees</p>
+                                <p className="text-sm font-semibold text-gray-900">
+                                  👥 {company.finder_data.basic_info.employees}
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Financial Info */}
+                        {company.finder_data.financials && Object.keys(company.finder_data.financials).length > 0 && (
+                          <div className="bg-white rounded p-2 border border-violet-100 mb-2">
+                            <p className="text-xs font-semibold text-violet-600 mb-1.5">Financial Data</p>
+                            <div className="space-y-1">
+                              {company.finder_data.financials.revenue && (
+                                <div className="flex justify-between items-center">
+                                  <span className="text-xs text-gray-600">💰 Revenue:</span>
+                                  <span className="text-sm font-semibold text-gray-900">
+                                    {company.finder_data.financials.revenue}
+                                  </span>
+                                </div>
+                              )}
+                              {company.finder_data.financials.operating_profit && (
+                                <div className="flex justify-between items-center">
+                                  <span className="text-xs text-gray-600">📊 Operating Profit:</span>
+                                  <span className="text-sm font-semibold text-gray-900">
+                                    {company.finder_data.financials.operating_profit}
+                                  </span>
+                                </div>
+                              )}
+                              {company.finder_data.financials.financial_year && (
+                                <div className="flex justify-between items-center">
+                                  <span className="text-xs text-gray-600">📅 Financial Year:</span>
+                                  <span className="text-xs text-gray-700">
+                                    {company.finder_data.financials.financial_year}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Contact Info from Finder */}
+                        {company.finder_data.contact && Object.keys(company.finder_data.contact).length > 0 && (
+                          <div className="bg-white rounded p-2 border border-violet-100 mb-2">
+                            <p className="text-xs font-semibold text-violet-600 mb-1.5">Contact Information</p>
+                            <div className="space-y-1 text-xs">
+                              {company.finder_data.contact.address && (
+                                <div className="text-gray-700">📍 {company.finder_data.contact.address}</div>
+                              )}
+                              {company.finder_data.contact.phone && (
+                                <div className="text-gray-700">📞 {company.finder_data.contact.phone}</div>
+                              )}
+                              {company.finder_data.contact.email && (
+                                <div className="text-blue-600 font-medium">
+                                  ✉️ {company.finder_data.contact.email}
+                                </div>
+                              )}
+                              {company.finder_data.contact.website && (
+                                <a 
+                                  href={company.finder_data.contact.website} 
+                                  target="_blank" 
+                                  rel="noopener noreferrer"
+                                  className="text-blue-600 hover:underline block"
+                                >
+                                  🌐 {company.finder_data.contact.website}
+                                </a>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Key People */}
+                        {company.finder_data.key_people && company.finder_data.key_people.length > 0 && (
+                          <div className="bg-white rounded p-2 border border-violet-100">
+                            <p className="text-xs font-semibold text-violet-600 mb-1.5">
+                              Key People ({company.finder_data.key_people.length})
+                            </p>
+                            <div className="space-y-1.5">
+                              {company.finder_data.key_people.slice(0, 5).map((person, pidx) => (
+                                <div key={pidx} className="text-xs border-l-2 border-violet-300 pl-2">
+                                  <div className="font-semibold text-gray-900">{person.name}</div>
+                                  {person.title && (
+                                    <div className="text-gray-600">{person.title}</div>
+                                  )}
+                                  {person.email && (
+                                    <div className="text-blue-600 font-medium">{person.email}</div>
+                                  )}
+                                </div>
+                              ))}
+                              {company.finder_data.key_people.length > 5 && (
+                                <p className="text-xs text-gray-500 italic">
+                                  +{company.finder_data.key_people.length - 5} more...
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
 
+                    {/* Original website */}
                     {company.website && (
                       <a 
                         href={company.website} 
@@ -435,30 +684,32 @@ export default function App() {
                         rel="noopener noreferrer"
                         className="text-sm text-blue-600 hover:text-blue-800 hover:underline block mb-2 font-medium"
                       >
-                        {company.website}
+                        🌐 {company.website}
                       </a>
                     )}
 
+                    {/* Enriched contacts from website scraping */}
                     {company.contact_info?.contacts?.length > 0 && (
                       <div className="mt-3 bg-emerald-50 rounded p-3 border border-emerald-200">
                         <p className="text-xs font-semibold text-emerald-700 mb-2 flex items-center gap-1">
                           <TrendingUp size={14} />
-                          Key Contacts:
+                          Direct Contacts from Website:
                         </p>
                         {company.contact_info.contacts.map((contact, cidx) => (
-                          <div key={cidx} className="text-sm text-gray-800 ml-2 mb-1">
+                          <div key={cidx} className="text-sm text-gray-800 ml-2 mb-1.5 border-l-2 border-emerald-400 pl-2">
                             {contact.name && <span className="font-medium text-gray-900">{contact.name}</span>}
                             {contact.title && <span className="text-gray-600"> • {contact.title}</span>}
-                            {contact.email && <span className="text-emerald-600"> • {contact.email}</span>}
-                            {contact.phone && <span className="text-gray-700"> • {contact.phone}</span>}
+                            {contact.email && <span className="text-emerald-600 block">{contact.email}</span>}
+                            {contact.phone && <span className="text-gray-700 block">{contact.phone}</span>}
                           </div>
                         ))}
                       </div>
                     )}
 
+                    {/* Additional emails */}
                     {company.contact_info?.emails?.length > 0 && (
                       <div className="mt-2">
-                        <p className="text-xs font-semibold text-gray-700 mb-1">Emails:</p>
+                        <p className="text-xs font-semibold text-gray-700 mb-1">Additional Emails:</p>
                         <div className="flex flex-wrap gap-1">
                           {company.contact_info.emails.map((email, eidx) => (
                             <span key={eidx} className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded font-medium">
@@ -469,9 +720,10 @@ export default function App() {
                       </div>
                     )}
 
+                    {/* Phone numbers */}
                     {company.contact_info?.phones?.length > 0 && (
                       <div className="mt-2">
-                        <p className="text-xs font-semibold text-gray-700 mb-1">Phones:</p>
+                        <p className="text-xs font-semibold text-gray-700 mb-1">Phone Numbers:</p>
                         <p className="text-xs text-gray-600 ml-2">
                           {company.contact_info.phones.join(', ')}
                         </p>
