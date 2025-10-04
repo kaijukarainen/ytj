@@ -1,7 +1,7 @@
 services:
   backend:
     build:
-      context: .
+      context: ./python
       dockerfile: Dockerfile.backend
     container_name: ytj-scraper-backend
     ports:
