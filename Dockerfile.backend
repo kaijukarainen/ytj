@@ -17,6 +17,12 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application files
 COPY ytj_scraper.py .
 COPY app.py .
+COPY config.py .
+
+# Copy modular structure
+COPY services/ ./services/
+COPY utils/ ./utils/
+COPY models/ ./models/
 
 # Create data directory for output files
 RUN mkdir -p /app/data

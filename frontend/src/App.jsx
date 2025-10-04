@@ -16,6 +16,10 @@ export default function App() {
   const [businessLines, setBusinessLines] = useState([]);
   const [startTime, setStartTime] = useState(null);
   const [cacheStats, setCacheStats] = useState({ entries: 0, size_kb: 0 });
+  const [validationConfig, setValidationConfig] = useState({
+    retry_delay: 5,
+    between_delay: 4
+  });
 
   useEffect(() => {
     fetch('http://localhost:5001/api/business-lines')
@@ -87,7 +91,10 @@ export default function App() {
       const response = await fetch('http://localhost:5001/api/validate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ leads: results })
+        body: JSON.stringify({ 
+          leads: results,
+          config: validationConfig
+        })
       });
       const data = await response.json();
     } catch (err) {
@@ -357,8 +364,8 @@ export default function App() {
         {results.length > 0 && (
           <div className="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
             <div className="flex flex-col gap-4 mb-6">
-              {/* Header Row */}
-              <div className="flex justify-between items-center">
+              {/* Header Row with Download and Cache buttons */}
+              <div className="flex justify-between items-start">
                 <div>
                   <h2 className="text-2xl font-bold text-gray-900">
                     Results ({results.length})
@@ -372,25 +379,6 @@ export default function App() {
                 </div>
                 
                 <div className="flex gap-2">
-                  {/* Validate Button */}
-                  <button
-                    onClick={validateWithFinder}
-                    disabled={isValidating}
-                    className="bg-gradient-to-r from-violet-600 to-purple-600 text-white px-4 py-2 rounded-lg font-semibold hover:from-violet-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-md"
-                  >
-                    {isValidating ? (
-                      <>
-                        <Loader2 size={18} className="animate-spin" />
-                        Validating...
-                      </>
-                    ) : (
-                      <>
-                        <ShieldCheck size={18} />
-                        Validate on Finder.fi
-                      </>
-                    )}
-                  </button>
-
                   {/* Download Dropdown */}
                   <div className="relative group">
                     <button
@@ -403,7 +391,6 @@ export default function App() {
                       </svg>
                     </button>
                     
-                    {/* Dropdown Menu */}
                     <div className="absolute right-0 mt-2 w-56 bg-white rounded-lg shadow-xl border border-gray-200 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-10">
                       <div className="py-2">
                         <button
@@ -479,6 +466,66 @@ export default function App() {
                   </p>
                 </div>
               </div>
+
+              {/* Validation Settings */}
+              <div className="bg-violet-50 rounded-lg p-4 border-2 border-violet-200">
+                <h3 className="text-sm font-semibold text-violet-700 mb-3">Validation Settings</h3>
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                      Retry Delay (seconds)
+                    </label>
+                    <select
+                      value={validationConfig.retry_delay}
+                      onChange={(e) => setValidationConfig({...validationConfig, retry_delay: parseInt(e.target.value)})}
+                      className="w-full px-2 py-1 text-sm bg-white border border-violet-300 rounded focus:ring-2 focus:ring-violet-500"
+                    >
+                      <option value="0">No wait (fast, risky)</option>
+                      <option value="3">3 seconds</option>
+                      <option value="5">5 seconds (default)</option>
+                      <option value="10">10 seconds (safe)</option>
+                      <option value="15">15 seconds (very safe)</option>
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1">Wait time if rate limited (202)</p>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                      Between Requests (seconds)
+                    </label>
+                    <select
+                      value={validationConfig.between_delay}
+                      onChange={(e) => setValidationConfig({...validationConfig, between_delay: parseInt(e.target.value)})}
+                      className="w-full px-2 py-1 text-sm bg-white border border-violet-300 rounded focus:ring-2 focus:ring-violet-500"
+                    >
+                      <option value="2">2 seconds (fast, risky)</option>
+                      <option value="4">4 seconds (default)</option>
+                      <option value="6">6 seconds (safe)</option>
+                      <option value="10">10 seconds (very safe)</option>
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1">Delay between each company</p>
+                  </div>
+                </div>
+
+                {/* Validate Button */}
+                <button
+                  onClick={validateWithFinder}
+                  disabled={isValidating}
+                  className="bg-gradient-to-r from-violet-600 to-purple-600 text-white px-4 py-2 rounded-lg font-semibold hover:from-violet-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-md w-full"
+                >
+                  {isValidating ? (
+                    <>
+                      <Loader2 size={18} className="animate-spin" />
+                      Validating...
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck size={18} />
+                      Validate on Finder.fi
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
 
             {isValidating && (
@@ -508,7 +555,7 @@ export default function App() {
               </div>
             )}
 
-            <div className="space-y-4 max-h-96 overflow-y-auto">
+            <div className="space-y-4 max-h-96 overflow-y-auto mt-4">
               {results.map((company, idx) => {
                 const hasEnrichedData = company.contact_info?.emails?.length > 0 || company.contact_info?.contacts?.length > 0;
                 const isVerifiedOnFinder = company.finder_data?.verified_on_finder;
@@ -727,6 +774,46 @@ export default function App() {
                         <p className="text-xs text-gray-600 ml-2">
                           {company.contact_info.phones.join(', ')}
                         </p>
+                      </div>
+                    )}
+
+                    {/* AI Insights */}
+                    {company.ai_insights && (
+                      <div className="mt-3 bg-blue-50 rounded p-3 border border-blue-200">
+                        <p className="text-xs font-semibold text-blue-700 mb-2 flex items-center gap-1">
+                          <Sparkles size={14} />
+                          AI Business Insights:
+                        </p>
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                          {company.ai_insights.company_size && (
+                            <div>
+                              <span className="text-gray-600">Size:</span>
+                              <span className="ml-1 font-medium text-gray-900">{company.ai_insights.company_size}</span>
+                            </div>
+                          )}
+                          {company.ai_insights.growth_stage && (
+                            <div>
+                              <span className="text-gray-600">Stage:</span>
+                              <span className="ml-1 font-medium text-gray-900">{company.ai_insights.growth_stage}</span>
+                            </div>
+                          )}
+                          {company.ai_insights.priority_score && (
+                            <div className="col-span-2">
+                              <span className="text-gray-600">Priority:</span>
+                              <span className={`ml-1 font-medium ${
+                                company.ai_insights.priority_score === 'High' ? 'text-green-600' :
+                                company.ai_insights.priority_score === 'Medium' ? 'text-yellow-600' :
+                                'text-gray-600'
+                              }`}>{company.ai_insights.priority_score}</span>
+                            </div>
+                          )}
+                          {company.ai_insights.best_contact_approach && (
+                            <div className="col-span-2">
+                              <span className="text-gray-600">Contact Approach:</span>
+                              <p className="text-gray-900 mt-1">{company.ai_insights.best_contact_approach}</p>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     )}
                   </div>
