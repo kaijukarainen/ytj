@@ -1,5 +1,5 @@
 """
-Finder.fi validation and data extraction service
+Finder.fi validation and data extraction service with enhanced rate limiting bypass
 """
 import requests
 from bs4 import BeautifulSoup
@@ -7,18 +7,50 @@ import time
 import re
 import json
 from urllib.parse import unquote
-from utils.headers_utils import get_browser_headers
+import random
 from services.cache_service import load_finder_cache, save_finder_cache
 from utils.export_utils import export_to_csv
 
 
-def validate_company_on_finder(company, cache=None, retry_delay=5):
+# Rotating User Agents
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0',
+]
+
+
+def get_rotating_headers():
+    """Get headers with rotating user agent"""
+    return {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'fi-FI,fi;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'DNT': '1',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Cache-Control': 'max-age=0',
+        'Referer': 'https://www.google.com/'
+    }
+
+
+def validate_company_on_finder(company, cache=None, retry_delay=5, session=None):
     """Check if company exists on finder.fi and extract comprehensive details
     
     Args:
         company: Company dict with name and business_id
         cache: Optional cache dict
         retry_delay: Seconds to wait between retries (default 5)
+        session: Optional requests session for connection reuse
     """
     try:
         company_name = company.get('name', '')
@@ -31,25 +63,36 @@ def validate_company_on_finder(company, cache=None, retry_delay=5):
             print(f"{'='*60}\n")
             return cache[business_id]
         
+        # Create session if not provided
+        if not session:
+            session = requests.Session()
+        
         # Search finder.fi for the company
         search_url = f"https://www.finder.fi/search?what={requests.utils.quote(company_name)}&sort=RELEVANCE_desc&page=1"
         
-        headers = get_browser_headers()
+        # Use rotating headers
+        headers = get_rotating_headers()
         
         print(f"\n{'='*60}")
         print(f"Validating: {company_name}")
         print(f"  Search URL: {search_url}")
+        print(f"  User-Agent: {headers['User-Agent'][:50]}...")
         
         # Try up to 3 times if we get 202
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                response = requests.get(search_url, headers=headers, timeout=15)
+                # Add random delay before request (human-like behavior)
+                time.sleep(random.uniform(0.5, 1.5))
+                
+                response = session.get(search_url, headers=headers, timeout=15)
                 
                 if response.status_code == 202:
                     wait_time = retry_delay * (attempt + 1)
                     print(f"  ⚠ Got 202 (rate limited), waiting {wait_time} seconds... (attempt {attempt + 1}/{max_retries})")
                     time.sleep(wait_time)
+                    # Rotate user agent for retry
+                    headers = get_rotating_headers()
                     continue
                     
                 if response.status_code != 200:
@@ -63,6 +106,7 @@ def validate_company_on_finder(company, cache=None, retry_delay=5):
                 print(f"  ⚠ Request timeout (attempt {attempt + 1}/{max_retries})")
                 if attempt < max_retries - 1:
                     time.sleep(5)
+                    headers = get_rotating_headers()
                     continue
                 else:
                     print(f"  ✗ Failed after {max_retries} attempts")
@@ -75,8 +119,7 @@ def validate_company_on_finder(company, cache=None, retry_delay=5):
         
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Find all links with "yhteystiedot" in href - these are company detail page links
-        # URL structure: /category/Company+Name/City/yhteystiedot/id
+        # Find all links with "yhteystiedot" in href
         results = soup.find_all('a', href=lambda x: x and 'yhteystiedot' in x if x else False)
         
         if not results:
@@ -87,38 +130,26 @@ def validate_company_on_finder(company, cache=None, retry_delay=5):
         
         # Extract and normalize company name for matching
         company_name_normalized = company_name.lower().replace(' oy', '').replace(' ab', '').replace(',', '').strip()
-        # Keep hyphens in original name for better matching
         company_name_with_hyphen = company_name_normalized
-        # Also create version without hyphens for flexible matching
         company_name_no_hyphen = company_name_normalized.replace('-', ' ')
         
         company_words = [w for w in company_name_no_hyphen.split() if len(w) > 2]
         
-        # Try to find exact match by analyzing the href
+        # Try to find exact match
         best_match = None
         best_score = 0
         
-        for idx, link in enumerate(results[:10]):  # Check first 10 results
+        for idx, link in enumerate(results[:10]):
             href = link.get('href', '')
             
-            # Extract company name from URL
-            # Format: /category/Company+Name/City/yhteystiedot/id
-            # Example: /Metallituotteet/J-Metallikaluste+Oy/Kuopio/yhteystiedot/407476
             parts = href.split('/')
-            
-            # Find the company name part - it's between category and city, before yhteystiedot
-            # The structure is: ['', 'category', 'Company+Name', 'City', 'yhteystiedot', 'id']
             company_url_part = None
             
-            # Find yhteystiedot index
             try:
                 yhteystiedot_idx = parts.index('yhteystiedot')
-                # Company name is 2 positions before yhteystiedot (skip city)
                 if yhteystiedot_idx >= 2:
                     company_url_part = parts[yhteystiedot_idx - 2]
             except (ValueError, IndexError):
-                # Fallback: try to find any part that looks like a company name
-                # (has + signs and is not 'yhteystiedot')
                 for part in parts:
                     if '+' in part and 'yhteystiedot' not in part and len(part) > 5:
                         company_url_part = part
@@ -127,75 +158,57 @@ def validate_company_on_finder(company, cache=None, retry_delay=5):
             if not company_url_part:
                 continue
             
-            # URL decode first (handles %C3%B6 etc.)
             company_url_part = unquote(company_url_part)
-            
-            # Convert URL format to text: "J-Metallikaluste+Oy" -> "j metallikaluste oy"
-            # First replace + with space, but keep hyphens
             url_company_name_original = company_url_part.replace('+', ' ').lower()
             url_company_name_original = url_company_name_original.replace(' oy', '').replace(' ab', '').strip()
-            
-            # Also create version without hyphens for comparison
             url_company_name_no_hyphen = url_company_name_original.replace('-', ' ')
             
-            print(f"  Candidate #{idx+1}:")
-            print(f"    URL: {href}")
-            print(f"    Extracted part: {company_url_part}")
-            print(f"    URL name (original): {url_company_name_original}")
-            print(f"    URL name (no hyphen): {url_company_name_no_hyphen}")
-            print(f"    Search name (with hyphen): {company_name_with_hyphen}")
-            print(f"    Search name (no hyphen): {company_name_no_hyphen}")
-            
-            # Also check if business ID is in the URL
+            # Check business ID in URL
             if business_id and business_id.replace('-', '') in href:
                 best_match = link
                 best_score = 100
                 print(f"  ✓ Perfect match by business ID in URL")
                 break
             
-            # Try exact match first (with hyphens)
+            # Try exact match
             if url_company_name_original == company_name_with_hyphen:
                 best_match = link
                 best_score = 100
-                print(f"    Match score: 100.0% (exact match with hyphens)")
                 break
             
-            # Score based on word matching (without hyphens for flexibility)
+            # Score based on word matching
             url_words = url_company_name_no_hyphen.split()
             matches = sum(1 for word in company_words if word in url_words)
             
-            # Calculate match score (percentage of words matched)
             if len(company_words) > 0:
                 score = (matches / len(company_words)) * 100
                 
-                # Bonus if URL has same number of words
                 if len(url_words) == len(company_words):
                     score += 10
                 
-                # Bonus if exact match without hyphens
                 if url_company_name_no_hyphen == company_name_no_hyphen:
                     score = 100
-                
-                print(f"    Match score: {score:.1f}% ({matches}/{len(company_words)} words)")
                 
                 if score > best_score:
                     best_score = score
                     best_match = link
         
-        # Accept match if score is good enough
-        if best_match and best_score >= 60:  # At least 60% match
+        if best_match and best_score >= 60:
             company_link = best_match
             print(f"  ✓ Best match selected with {best_score:.1f}% confidence")
         else:
             print(f"  ✗ No good match found (best score: {best_score:.1f}%)")
             return None
         
-        # Navigate to company page using the link's href
+        # Navigate to company page
         company_url = 'https://www.finder.fi' + company_link['href']
         print(f"  Company page: {company_url}")
         
-        time.sleep(1)  # Rate limiting
-        company_response = requests.get(company_url, headers=headers, timeout=10)
+        # Random delay + rotate headers
+        time.sleep(random.uniform(1.0, 2.0))
+        headers = get_rotating_headers()
+        
+        company_response = session.get(company_url, headers=headers, timeout=10)
         
         if company_response.status_code != 200:
             print(f"  ✗ Failed to load company page (status {company_response.status_code})")
@@ -213,7 +226,7 @@ def validate_company_on_finder(company, cache=None, retry_delay=5):
             'key_people': []
         }
         
-        # Extract data using multiple strategies
+        # Extract data
         finder_data = _extract_company_data(company_soup, finder_data)
         
         # Log what we found
@@ -239,7 +252,6 @@ def validate_company_on_finder(company, cache=None, retry_delay=5):
         finder_data['financials'] = {k: v for k, v in finder_data['financials'].items() if v}
         finder_data['contact'] = {k: v for k, v in finder_data['contact'].items() if v}
         
-        # Check if we found any useful data
         has_data = (finder_data['basic_info'] or 
                    finder_data['financials'] or 
                    finder_data['contact'] or 
@@ -264,7 +276,13 @@ def validate_company_on_finder(company, cache=None, retry_delay=5):
 def _extract_company_data(company_soup, finder_data):
     """Extract company data using multiple strategies"""
     
-    # STRATEGY 1: Look for structured data in definition lists (dl/dt/dd)
+    # Extract employees with improved patterns
+    _extract_employees(company_soup, finder_data)
+    
+    # Extract financial data with year
+    _extract_financials(company_soup, finder_data)
+    
+    # STRATEGY 1: Definition lists
     definition_lists = company_soup.find_all('dl')
     for dl in definition_lists:
         dts = dl.find_all('dt')
@@ -273,10 +291,9 @@ def _extract_company_data(company_soup, finder_data):
         for dt, dd in zip(dts, dds):
             key = dt.get_text(strip=True)
             value = dd.get_text(strip=True)
-            
             _map_field_to_data(key, value, finder_data)
     
-    # STRATEGY 2: Look for tables with company information
+    # STRATEGY 2: Tables
     tables = company_soup.find_all('table')
     for table in tables:
         rows = table.find_all('tr')
@@ -287,16 +304,100 @@ def _extract_company_data(company_soup, finder_data):
                 value = cells[1].get_text(strip=True)
                 _map_field_to_data(key, value, finder_data)
     
-    # STRATEGY 3: Look for divs with specific classes or data attributes
+    # STRATEGY 3: Selectors
     _extract_with_selectors(company_soup, finder_data)
     
-    # STRATEGY 4: Extract key people/management
+    # STRATEGY 4: Key people
     _extract_key_people(company_soup, finder_data)
     
-    # STRATEGY 5: Text-based extraction as fallback
+    # STRATEGY 5: Text-based extraction
     _extract_from_text(company_soup, finder_data)
     
     return finder_data
+
+
+def _extract_employees(soup, finder_data):
+    """Extract employee count with improved patterns"""
+    # Look for employee count with emoji or icons
+    page_text = soup.get_text()
+    
+    # Pattern 1: 👥 33 or similar
+    emoji_pattern = r'👥\s*(\d+)'
+    match = re.search(emoji_pattern, page_text)
+    if match:
+        finder_data['basic_info']['employees'] = match.group(1)
+        print(f"    Found employees (emoji): {match.group(1)}")
+        return
+    
+    # Pattern 2: Henkilöstö: 33
+    text_pattern = r'Henkilöstö[:\s]+(\d+[-\s]?\d*)'
+    match = re.search(text_pattern, page_text, re.IGNORECASE)
+    if match:
+        finder_data['basic_info']['employees'] = match.group(1).strip()
+        print(f"    Found employees (text): {match.group(1)}")
+        return
+    
+    # Pattern 3: Look in specific elements
+    for elem in soup.find_all(['div', 'span', 'p'], text=re.compile(r'(henkilöstö|työntekijä|employees)', re.I)):
+        text = elem.get_text()
+        numbers = re.findall(r'\d+', text)
+        if numbers:
+            finder_data['basic_info']['employees'] = numbers[0]
+            print(f"    Found employees (element): {numbers[0]}")
+            return
+
+
+def _extract_financials(soup, finder_data):
+    """Extract financial data with year information"""
+    page_text = soup.get_text()
+    
+    # Pattern 1: 💰 Revenue: 239 000
+    revenue_emoji_pattern = r'💰\s*[Rr]evenue[:\s]*([0-9\s,.]+(?:EUR|€|miljoonaa|tuhatta)?)'
+    match = re.search(revenue_emoji_pattern, page_text)
+    if match:
+        finder_data['financials']['revenue'] = match.group(1).strip()
+        print(f"    Found revenue (emoji): {match.group(1)}")
+    
+    # Pattern 2: Liikevaihto: 239 000
+    if not finder_data['financials'].get('revenue'):
+        revenue_pattern = r'Liikevaihto[:\s]+([0-9\s,.]+\s*(?:EUR|€|miljoonaa|tuhatta)?)'
+        match = re.search(revenue_pattern, page_text, re.IGNORECASE)
+        if match:
+            finder_data['financials']['revenue'] = match.group(1).strip()
+            print(f"    Found revenue (text): {match.group(1)}")
+    
+    # Pattern 3: 📊 Operating Profit: 24,7%
+    profit_emoji_pattern = r'📊\s*[Oo]perating [Pp]rofit[:\s]*([0-9,.-]+\s*%?)'
+    match = re.search(profit_emoji_pattern, page_text)
+    if match:
+        finder_data['financials']['operating_profit'] = match.group(1).strip()
+        print(f"    Found operating profit (emoji): {match.group(1)}")
+    
+    # Pattern 4: Liikevoitto: 24,7%
+    if not finder_data['financials'].get('operating_profit'):
+        profit_pattern = r'Liikevoitto[:\s]+([0-9,.-]+\s*%?)'
+        match = re.search(profit_pattern, page_text, re.IGNORECASE)
+        if match:
+            finder_data['financials']['operating_profit'] = match.group(1).strip()
+            print(f"    Found operating profit (text): {match.group(1)}")
+    
+    # Extract financial year
+    year_pattern = r'Tilikausi[:\s]+(\d{1,2}[./]\d{1,2}[./])?(\d{4})'
+    match = re.search(year_pattern, page_text, re.IGNORECASE)
+    if match:
+        finder_data['financials']['financial_year'] = match.group(2)
+        print(f"    Found financial year: {match.group(2)}")
+    
+    # Alternative year pattern: (2023) or 2023
+    if not finder_data['financials'].get('financial_year'):
+        # Look near revenue/profit mentions
+        for line in page_text.split('\n'):
+            if any(word in line.lower() for word in ['liikevaihto', 'revenue', 'liikevoitto', 'profit']):
+                year_match = re.search(r'\(?(20\d{2})\)?', line)
+                if year_match:
+                    finder_data['financials']['financial_year'] = year_match.group(1)
+                    print(f"    Found financial year (context): {year_match.group(1)}")
+                    break
 
 
 def _map_field_to_data(key, value, finder_data):
@@ -360,20 +461,17 @@ def _extract_key_people(company_soup, finder_data):
         if parent:
             person_containers = parent.find_all(['div', 'li'], class_=re.compile(r'person|contact|member'))
             
-            for container in person_containers[:10]:  # Limit to 10 people
+            for container in person_containers[:10]:
                 person = {}
                 
-                # Try to extract name
                 name_elem = container.find(['h3', 'h4', 'strong', 'span'], class_=re.compile(r'name'))
                 if name_elem:
                     person['name'] = name_elem.get_text(strip=True)
                 
-                # Try to extract title/role
                 title_elem = container.find(['span', 'p', 'div'], class_=re.compile(r'title|role|position'))
                 if title_elem:
                     person['title'] = title_elem.get_text(strip=True)
                 
-                # Try to extract email
                 email_elem = container.find('a', href=re.compile(r'^mailto:'))
                 if email_elem:
                     person['email'] = email_elem['href'].replace('mailto:', '')
@@ -436,6 +534,9 @@ def run_finder_validation(leads, validation_status, scraping_status, config=None
         validated_leads = []
         cache_updated = False
         
+        # Create persistent session for connection reuse
+        session = requests.Session()
+        
         for idx, lead in enumerate(leads):
             validation_status['current_company'] = lead['name']
             validation_status['progress'] = idx + 1
@@ -446,8 +547,8 @@ def run_finder_validation(leads, validation_status, scraping_status, config=None
             has_email = (lead.get('contact_info', {}).get('emails') or 
                         any(c.get('email') for c in lead.get('contact_info', {}).get('contacts', [])))
             
-            # Check on finder.fi (with cache)
-            finder_data = validate_company_on_finder(lead, cache, retry_delay)
+            # Check on finder.fi (with cache and session reuse)
+            finder_data = validate_company_on_finder(lead, cache, retry_delay, session)
             
             # Update cache if we got new data
             if finder_data and lead.get('business_id'):
@@ -472,10 +573,12 @@ def run_finder_validation(leads, validation_status, scraping_status, config=None
                 validation_status['removed_count'] += 1
                 print(f"  ✗ Removed (no email + not found on finder)")
             
-            # Configurable delay to avoid rate limiting
-            import random
+            # Configurable delay with randomization (more human-like)
             delay = random.uniform(between_delay, between_delay + 2)
             time.sleep(delay)
+        
+        # Close session
+        session.close()
         
         # Save updated cache
         if cache_updated:

@@ -11,14 +11,30 @@ from services.enrichment_service import run_agent_enrichment
 from services.cache_service import load_finder_cache
 from utils.export_utils import export_to_csv
 
+# Import database routes
+from routes.db_routes import db_bp
+
 # Import models
 from models.status_models import scraping_status, validation_status, agent_status
+from models.db_models import init_db
 
 # Import config
 from config import BUSINESS_LINES
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
+
+# Initialize database
+print("Initializing database...")
+try:
+    init_db()
+    print("✓ Database initialized successfully")
+except Exception as e:
+    print(f"⚠ Warning: Database initialization failed: {e}")
+    print("  Database features will not be available")
+
+# Register database blueprint
+app.register_blueprint(db_bp)
 
 # Add debug logging
 @app.after_request

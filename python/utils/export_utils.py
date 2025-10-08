@@ -115,6 +115,14 @@ def export_to_csv(leads, filename='companies_leads.csv'):
                     social_links = [f"{k}: {v}" for k, v in social_media.items()]
                     row['Social Media'] = '; '.join(social_links)
                 
+                # Extract AI insights
+                ai_insights = lead.get('ai_insights', {})
+                if ai_insights:
+                    row['AI Company Size'] = ai_insights.get('company_size', '')
+                    row['AI Growth Stage'] = ai_insights.get('growth_stage', '')
+                    row['AI Best Contact Approach'] = ai_insights.get('best_contact_approach', '')
+                    row['AI Priority Score'] = ai_insights.get('priority_score', '')
+                
                 writer.writerow(row)
         
         print(f"✓ Exported {len(leads)} leads to {filename}")
@@ -123,3 +131,4 @@ def export_to_csv(leads, filename='companies_leads.csv'):
     except Exception as e:
         print(f"Error exporting to CSV: {e}")
         return False
+    

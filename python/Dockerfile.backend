@@ -5,6 +5,7 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
@@ -18,11 +19,13 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY ytj_scraper.py .
 COPY app.py .
 COPY config.py .
+COPY init_db.py .
 
 # Copy modular structure
-COPY services/ ./services/
-COPY utils/ ./utils/
 COPY models/ ./models/
+COPY services/ ./services/
+COPY routes/ ./routes/
+COPY utils/ ./utils/
 
 # Create data directory for output files
 RUN mkdir -p /app/data
@@ -30,5 +33,9 @@ RUN mkdir -p /app/data
 # Expose port
 EXPOSE 5001
 
-# Run the application
-CMD ["python", "-u", "app.py"]
+# Healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+  CMD python -c "import requests; requests.get('http://localhost:5001/api/status')"
+
+# Initialize database and run the application
+CMD python init_db.py && python -u app.py

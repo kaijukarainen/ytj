@@ -3,6 +3,7 @@ import Header from './components/Header';
 import ScraperForm from './components/ScraperForm';
 import AIAgentPanel from './components/AIAgentPanel';
 import ResultsSection from './components/ResultsSection';
+import DatabasePanel from './components/DatabasePanel';
 
 export default function App() {
   const [params, setParams] = useState({
@@ -162,6 +163,7 @@ export default function App() {
       <div className="container mx-auto px-4 py-8 max-w-6xl">
         <Header />
 
+        {/* Top Row: Scraper + AI Agent */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
           <ScraperForm
             params={params}
@@ -181,6 +183,12 @@ export default function App() {
           />
         </div>
 
+        {/* Database Panel */}
+        <div className="mb-8">
+          <DatabasePanel results={results} params={params} />
+        </div>
+
+        {/* Results Section */}
         {results.length > 0 && (
           <ResultsSection
             results={results}
